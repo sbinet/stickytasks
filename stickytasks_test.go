@@ -29,6 +29,19 @@ func TestStickiness(t *testing.T) {
 }
 
 func TestThrottle(t *testing.T) {
+	ch := make(chan int)
+	workers := New(2)
+	workers.Do("a", newResponder(ch, 1, 10*time.Millisecond).respond)
+	workers.Do("a", newResponder(ch, 2, 15*time.Millisecond).respond)
+	workers.Do("b", newResponder(ch, 3, 20*time.Millisecond).respond)
+	for i := 1; i <= 3; i++ {
+		v := <-ch
+		if i != v {
+			t.Errorf("Received %d, want %d\n", v, i)
+		}
+	}
+
+	workers.Shutdown()
 }
 
 type responder struct {

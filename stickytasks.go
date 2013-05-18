@@ -21,12 +21,13 @@ import (
 )
 
 type Workers struct {
-	in        chan stickyTask
-	maxQueued int
+	in       chan stickyTask
+	maxTasks int
+	running  int
 }
 
-func New(maxQueued int) *Workers {
-	workers := &Workers{make(chan stickyTask), maxQueued}
+func New(maxTasks int) *Workers {
+	workers := &Workers{make(chan stickyTask), maxTasks, 0}
 
 	go workers.start()
 	return workers
@@ -53,6 +54,13 @@ loop:
 				break loop
 			}
 
+			if w.running == w.maxTasks {
+				key := <-done
+				w.running--
+				handleCompletion(channels, queues, key)
+			}
+
+			w.running++
 			if queue, ok := queues[t.key]; !ok {
 				channels[t.key], queues[t.key] = spawnAndDo(t.key, t.task, done)
 			} else {
@@ -60,14 +68,8 @@ loop:
 			}
 
 		case key := <-done:
-			if ch, queue := channels[key], queues[key]; queue.Len() == 0 {
-				close(ch)
-				delete(channels, key)
-				delete(queues, key)
-			} else {
-				t := queue.Remove(queue.Front()).(stickyTask)
-				ch <- t.task
-			}
+			w.running--
+			handleCompletion(channels, queues, key)
 		}
 	}
 }
@@ -93,5 +95,16 @@ func worker(key interface{}, ch chan func(), done chan interface{}) {
 		} else {
 			break
 		}
+	}
+}
+
+func handleCompletion(channels map[interface{}]chan func(), queues map[interface{}]*list.List, key interface{}) {
+	if ch, queue := channels[key], queues[key]; queue.Len() == 0 {
+		close(ch)
+		delete(channels, key)
+		delete(queues, key)
+	} else {
+		t := queue.Remove(queue.Front()).(stickyTask)
+		ch <- t.task
 	}
 }
