@@ -45,11 +45,12 @@ func (w *Workers) start() {
 	channels := make(map[interface{}]chan func())
 	queues := make(map[interface{}]*list.List)
 
+loop:
 	for {
 		select {
 		case t, ok := <-w.in:
 			if !ok {
-				break
+				break loop
 			}
 
 			if queue, ok := queues[t.key]; !ok {
@@ -86,15 +87,11 @@ func spawnAndDo(key interface{}, task func(), done chan interface{}) (ch chan fu
 
 func worker(key interface{}, ch chan func(), done chan interface{}) {
 	for {
-		select {
-		case op, ok := <-ch:
-			if !ok {
-				break
-			}
-
+		if op, ok := <-ch; ok {
 			op()
-		default:
 			done <- key
+		} else {
+			break
 		}
 	}
 }
