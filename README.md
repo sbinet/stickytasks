@@ -6,8 +6,6 @@ Install stickytasks with,
 
 View the [API Documentation](http://gopkgdoc.appspot.com/pkg/github.com/tuxychandru/stickytasks).
 
-[![Build Status](http://goci.me/project/image/github.com/tuxychandru/stickytasks)](http://goci.me/project/github.com/tuxychandru/stickytasks)
-
 ## License
 
 Copyright (C) 2012 Chandra Sekar S
