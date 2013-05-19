@@ -20,58 +20,10 @@ import (
 	"container/list"
 )
 
-type Workers struct {
-	in       chan stickyTask
+type Scheduler struct {
+	in       chan *stickyTask
+	shutdown chan bool
 	maxTasks int
-	running  int
-}
-
-func New(maxTasks int) *Workers {
-	workers := &Workers{make(chan stickyTask), maxTasks, 0}
-
-	go workers.start()
-	return workers
-}
-
-func (w *Workers) Do(key interface{}, task func()) {
-	w.in <- stickyTask{key, task}
-}
-
-func (w *Workers) Shutdown() {
-	close(w.in)
-}
-
-func (w *Workers) start() {
-	done := make(chan interface{})
-	channels := make(map[interface{}]chan func())
-	queues := make(map[interface{}]*list.List)
-
-loop:
-	for {
-		select {
-		case t, ok := <-w.in:
-			if !ok {
-				break loop
-			}
-
-			if w.running == w.maxTasks {
-				key := <-done
-				w.running--
-				handleCompletion(channels, queues, key)
-			}
-
-			w.running++
-			if queue, ok := queues[t.key]; !ok {
-				channels[t.key], queues[t.key] = spawnAndDo(t.key, t.task, done)
-			} else {
-				queue.PushBack(t)
-			}
-
-		case key := <-done:
-			w.running--
-			handleCompletion(channels, queues, key)
-		}
-	}
 }
 
 type stickyTask struct {
@@ -79,32 +31,103 @@ type stickyTask struct {
 	task func()
 }
 
-func spawnAndDo(key interface{}, task func(), done chan interface{}) (ch chan func(), queue *list.List) {
-	ch = make(chan func())
-	queue = list.New()
-	go worker(key, ch, done)
-	ch <- task
-	return
+func New(maxTasks int) *Scheduler {
+	s := &Scheduler{make(chan *stickyTask), make(chan bool), maxTasks}
+	go s.start()
+	return s
 }
 
-func worker(key interface{}, ch chan func(), done chan interface{}) {
+func (s *Scheduler) Do(key interface{}, task func()) {
+	s.in <- &stickyTask{key, task}
+}
+
+func (s *Scheduler) Shutdown() {
+	close(s.in)
+	<-s.shutdown
+}
+
+func (s *Scheduler) start() {
+	done := make(chan interface{})
+	workers := newWorkers(s.maxTasks, done)
+
+	for {
+		select {
+		case t, ok := <-s.in:
+			if !ok {
+				workers.awaitCompletion()
+				s.shutdown <- true
+				return
+			}
+
+			if workers.tooBusy() {
+				workers.doNext(<-done)
+			}
+
+			workers.addTask(t)
+		case key := <-done:
+			workers.doNext(key)
+		}
+	}
+}
+
+type workers struct {
+	channels          map[interface{}]chan func()
+	queues            map[interface{}]*list.List
+	done              chan interface{}
+	maxTasks, running int
+}
+
+func newWorkers(maxTasks int, done chan interface{}) *workers {
+	return &workers{
+		make(map[interface{}]chan func()),
+		make(map[interface{}]*list.List),
+		done, maxTasks, 0,
+	}
+}
+
+func (w *workers) addTask(t *stickyTask) {
+	w.running++
+	if queue, ok := w.queues[t.key]; !ok {
+		ch := make(chan func())
+		w.channels[t.key] = ch
+		w.queues[t.key] = list.New()
+		go w.spawn(t.key)
+		ch <- t.task
+	} else {
+		queue.PushBack(t)
+	}
+}
+
+func (w *workers) spawn(key interface{}) {
+	ch := w.channels[key]
 	for {
 		if op, ok := <-ch; ok {
 			op()
-			done <- key
+			w.done <- key
 		} else {
 			break
 		}
 	}
 }
 
-func handleCompletion(channels map[interface{}]chan func(), queues map[interface{}]*list.List, key interface{}) {
-	if ch, queue := channels[key], queues[key]; queue.Len() == 0 {
+func (w *workers) doNext(key interface{}) {
+	w.running--
+	if ch, queue := w.channels[key], w.queues[key]; queue.Len() == 0 {
 		close(ch)
-		delete(channels, key)
-		delete(queues, key)
+		delete(w.channels, key)
+		delete(w.queues, key)
 	} else {
-		t := queue.Remove(queue.Front()).(stickyTask)
+		t := queue.Remove(queue.Front()).(*stickyTask)
 		ch <- t.task
+	}
+}
+
+func (w *workers) tooBusy() bool {
+	return w.maxTasks > 0 && w.running == w.maxTasks
+}
+
+func (w *workers) awaitCompletion() {
+	for w.running != 0 {
+		w.doNext(<-w.done)
 	}
 }
